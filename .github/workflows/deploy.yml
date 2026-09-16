@@ -1,0 +1,68 @@
+name: deploy
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # OIDC トークンを取得し、claim を表示する。トークン本体は表示しない。
+      - name: OIDC の claim を表示
+        run: |
+          python3 - <<'EOF'
+          import os, json, base64, urllib.request
+
+          url = os.environ['ACTIONS_ID_TOKEN_REQUEST_URL'] + '&audience=ghcr-oidc-lab'
+          req = urllib.request.Request(
+              url,
+              headers={'Authorization': 'bearer ' + os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']},
+          )
+          token = json.load(urllib.request.urlopen(req))['value']
+
+          payload = token.split('.')[1]
+          payload += '=' * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+
+          keys = [
+              'iss', 'aud', 'sub',
+              'repository', 'repository_id',
+              'repository_owner', 'repository_owner_id',
+              'repository_visibility',
+              'actor', 'event_name', 'ref', 'workflow_ref',
+          ]
+          print(json.dumps({k: claims.get(k) for k in keys}, ensure_ascii=False, indent=2))
+          EOF
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ github.sha }}
+            ${{ steps.meta.outputs.image }}:latest
+
+      - name: イメージ参照
+        run: |
+          {
+            echo '```'
+            echo "${{ steps.meta.outputs.image }}:${{ github.sha }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

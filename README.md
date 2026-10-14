@@ -1,20 +1,17 @@
 # ghcr-oidc-lab
 
-fork したリポジトリの Actions から OIDC トークンを取得し、fork 所有者の GHCR へイメージを push する挙動を確認する。
+fork したリポジトリの Actions でイメージをビルドし、fork 所有者の GHCR へ push する。
+続けて OIDC トークンを添えて外部の API へデプロイを要求する。
 
 ## 手順
 
 1. このリポジトリを fork する
-2. fork の Settings → Actions でワークフローを有効にする
-3. fork へ push する
-4. ワークフローのログで OIDC の claim を確認する
-5. Packages からイメージの可視性を public にする
-
-## 出力
-
-`ghcr.io/<fork の所有者>/ghcr-oidc-lab:<commit sha>`
+2. fork の Actions タブでワークフローを有効にする
+3. fork の main へ push する
 
 ## 動作
 
-`server.mjs` はポート 8080 で応答し、`BUILD_MARKER` 環境変数の値を返す。
-イメージの入れ替わりを確認するために使う。
+`server.mjs` はポート 3000 で応答する。
+
+- `/healthz` は `ok` を返す
+- それ以外は `marker.txt` の内容を返す。イメージの入れ替わりの確認に使う

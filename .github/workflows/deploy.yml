@@ -4,65 +4,76 @@ on:
   push:
   workflow_dispatch:
 
-permissions:
-  contents: read
-  packages: write
-  id-token: write
+permissions: {}
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+concurrency:
+  # 同じリポジトリの実行を 1 本に保つ。実行中のものは完走させ、待機は最新 1 件に潰す
+  group: deploy-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  # ブローカーの公開 URL。OIDC トークンの audience にも使う
+  # 空のあいだはビルドとイメージの push までで終わる
+  BROKER_URL: https://lab-broker.monica-dev.workers.dev
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  deploy:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      # イメージを自分の GHCR へ push する
+      packages: write
+      # ブローカーへ提示する OIDC トークンを取得する
+      id-token: write
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # 後続の docker build はリポジトリのコードを実行するため、Git の認証情報を残さない
+          persist-credentials: false
 
-      # OIDC トークンを取得し、claim を表示する。トークン本体は表示しない。
-      - name: OIDC の claim を表示
-        run: |
-          python3 - <<'EOF'
-          import os, json, base64, urllib.request
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-          url = os.environ['ACTIONS_ID_TOKEN_REQUEST_URL'] + '&audience=ghcr-oidc-lab'
-          req = urllib.request.Request(
-              url,
-              headers={'Authorization': 'bearer ' + os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']},
-          )
-          token = json.load(urllib.request.urlopen(req))['value']
-
-          payload = token.split('.')[1]
-          payload += '=' * (-len(payload) % 4)
-          claims = json.loads(base64.urlsafe_b64decode(payload))
-
-          keys = [
-              'iss', 'aud', 'sub',
-              'repository', 'repository_id',
-              'repository_owner', 'repository_owner_id',
-              'repository_visibility',
-              'actor', 'event_name', 'ref', 'workflow_ref',
-          ]
-          print(json.dumps({k: claims.get(k) for k in keys}, ensure_ascii=False, indent=2))
-          EOF
-
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: meta
-        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - id: image
+        # GHCR のパスは小文字しか受け付けない
+        run: echo "ref=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: true
-          tags: |
-            ${{ steps.meta.outputs.image }}:${{ github.sha }}
-            ${{ steps.meta.outputs.image }}:latest
+          tags: ${{ steps.image.outputs.ref }}
+          # キャッシュは fork のスコープに閉じる
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: イメージ参照
+      - name: デプロイを要求する
+        if: env.BROKER_URL != ''
+        run: |
+          # トークン本体はログへ出さない
+          token=$(curl -sS \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${BROKER_URL}" \
+            | jq -r .value)
+
+          # デプロイ先もイメージも claim から決まるため、本文は送らない
+          curl -sS --fail-with-body -X POST "${BROKER_URL}/deploy" \
+            -H "Authorization: Bearer ${token}"
+
+      - name: イメージ参照を残す
         run: |
           {
             echo '```'
-            echo "${{ steps.meta.outputs.image }}:${{ github.sha }}"
+            echo "${{ steps.image.outputs.ref }}"
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } >> "${GITHUB_STEP_SUMMARY}"

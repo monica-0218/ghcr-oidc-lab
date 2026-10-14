@@ -1,11 +1,16 @@
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 
-const VERSION = process.env.BUILD_MARKER ?? "v1";
-const PORT = Number(process.env.PORT ?? 8080);
+const MARKER = readFileSync(new URL("./marker.txt", import.meta.url), "utf8").trim();
+const PORT = Number(process.env.PORT ?? 3000);
 
 createServer((req, res) => {
   res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-  res.end(`poc ${VERSION}\nhost=${process.env.FLY_MACHINE_ID ?? "local"}\n`);
+  if (req.url === "/healthz") {
+    res.end("ok\n");
+    return;
+  }
+  res.end(`lab ${MARKER}\nhost=${process.env.FLY_MACHINE_ID ?? "local"}\n`);
 }).listen(PORT, () => {
   console.log(`listening on ${PORT}`);
 });
